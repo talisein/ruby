@@ -510,6 +510,7 @@ static struct {
 } signal_buff;
 #if RUBY_SIGCHLD
 volatile unsigned int ruby_nocldwait;
+static sighandler_t default_sigchld_handler;
 #endif
 
 #define sighandler_t ruby_sighandler_t
@@ -729,6 +730,13 @@ sighandler(int sig)
         /* avoid spurious wakeup in main thread if and only if nobody uses trap(:CHLD) */
         if (vm && ACCESS_ONCE(VALUE, vm->trap_list.cmd[sig])) {
             signal_enque(sig);
+        }
+
+        /* chain up if there was another SIGCHLD handler */
+        if (0       != default_sigchld_handler &&
+            SIG_IGN != default_sigchld_handler &&
+            SIG_DFL != default_sigchld_handler) {
+            default_sigchld_handler(RUBY_SIGCHLD);
         }
 #endif
     }
@@ -1473,6 +1481,7 @@ init_sigchld(int sig)
 
     oldfunc = ruby_signal(sig, SIG_DFL);
     if (oldfunc == SIG_ERR) return -1;
+    default_sigchld_handler = oldfunc;
     ruby_signal(sig, func);
     ACCESS_ONCE(VALUE, GET_VM()->trap_list.cmd[sig]) = 0;
 
@@ -1483,6 +1492,13 @@ init_sigchld(int sig)
     INSTALL_SIGHANDLER(init_sigchld(signum), #signum, signum)
 #endif
 
+#define restore_forced_signal(signum, handler) do { \
+    if (0 != (handler)) { \
+        ruby_signal((signum), (handler)); \
+    } else { \
+        ruby_signal((signum), SIG_DFL); \
+    } } while(0)
+
 void
 ruby_sig_finalize(void)
 {
@@ -1492,6 +1508,19 @@ ruby_sig_finalize(void)
     if (oldfunc == sighandler) {
         ruby_signal(SIGINT, SIG_DFL);
     }
+
+#   ifdef SIGSEGV
+    restore_forced_signal(SIGSEGV, default_sigsegv_handler);
+#   endif
+#   ifdef SIGILL
+    restore_forced_signal(SIGILL, default_sigill_handler);
+#   endif
+#   ifdef SIGBUS
+    restore_forced_signal(SIGBUS, default_sigbus_handler);
+#   endif
+#   ifdef RUBY_SIGCHLD
+    restore_forced_signal(RUBY_SIGCHLD, default_sigchld_handler);
+#   endif
 }
 
 
